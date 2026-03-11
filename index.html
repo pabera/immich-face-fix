@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Immich Face Fix</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; }
+.container { max-width: 960px; margin: 0 auto; padding: 20px; }
+h1 { text-align: center; margin-bottom: 20px; font-size: 1.5em; color: #e94560; }
+h2 { margin-bottom: 12px; font-size: 1.2em; }
+
+/* Person selection */
+#setup { display: flex; flex-direction: column; gap: 16px; }
+.search-box { width: 100%; padding: 10px 14px; border-radius: 8px; border: 1px solid #333; background: #16213e; color: #eee; font-size: 14px; }
+.person-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; max-height: 35vh; overflow-y: auto; padding: 4px; }
+.person-card { display: flex; flex-direction: column; align-items: center; padding: 8px 4px; border-radius: 8px; border: 2px solid transparent; cursor: pointer; transition: all 0.15s; background: #16213e; }
+.person-card:hover { border-color: #e94560; }
+.person-card.selected { border-color: #e94560; background: #1a1a40; }
+.person-card img { width: 64px; height: 64px; border-radius: 50%; object-fit: cover; }
+.person-card span { font-size: 11px; margin-top: 4px; text-align: center; word-break: break-word; }
+.selection-row { display: flex; gap: 16px; }
+.selection-col { flex: 1; }
+.selected-preview { display: flex; align-items: center; gap: 10px; padding: 10px; background: #16213e; border-radius: 8px; min-height: 56px; margin-bottom: 8px; }
+.selected-preview img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; }
+.btn { padding: 10px 24px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 600; transition: background 0.15s; }
+.btn-primary { background: #e94560; color: #fff; }
+.btn-primary:hover { background: #c73e54; }
+.btn-primary:disabled { background: #555; cursor: not-allowed; }
+.btn-secondary { background: #333; color: #eee; }
+.btn-secondary:hover { background: #444; }
+.btn-link { background: none; border: none; color: #e94560; cursor: pointer; font-size: 12px; text-decoration: underline; padding: 4px; }
+.btn-link:hover { color: #c73e54; }
+
+/* Loading */
+#loading-assets { text-align: center; padding: 40px 0; }
+
+/* Review */
+#review { display: none; }
+.review-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; background: #16213e; border-radius: 8px; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+.review-header .stats span { margin-right: 16px; font-size: 13px; }
+.photo-container { position: relative; display: flex; justify-content: center; background: #000; border-radius: 8px; overflow: hidden; max-height: 55vh; margin-bottom: 12px; }
+.photo-container img { max-width: 100%; max-height: 55vh; object-fit: contain; }
+.photo-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,0.6); z-index: 10; }
+.photo-loading .spinner { width: 36px; height: 36px; border: 3px solid #333; border-top-color: #e94560; border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.face-box { position: absolute; border: 2px solid #e94560; border-radius: 4px; pointer-events: none; }
+.face-label { position: absolute; top: -22px; left: -2px; background: #e94560; color: #fff; font-size: 12px; font-weight: 700; padding: 2px 6px; border-radius: 3px; }
+.face-crops { display: flex; gap: 12px; justify-content: center; align-items: flex-end; margin-bottom: 12px; flex-wrap: wrap; }
+.face-crop-item { text-align: center; }
+.face-crop-item canvas { border-radius: 8px; border: 2px solid #333; max-width: 120px; max-height: 120px; }
+.face-crop-item .crop-label { display: block; margin-top: 4px; font-size: 13px; font-weight: 600; color: #e94560; }
+.shortcuts { text-align: center; font-size: 13px; color: #aaa; padding: 8px 0; }
+.shortcuts kbd { background: #333; padding: 2px 8px; border-radius: 4px; font-family: inherit; color: #eee; margin: 0 2px; }
+
+/* Summary */
+#summary { display: none; text-align: center; padding: 40px 0; }
+#summary .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; max-width: 450px; margin: 20px auto; }
+#summary .stat-box { background: #16213e; padding: 16px; border-radius: 8px; }
+#summary .stat-box .num { font-size: 2em; font-weight: 700; color: #e94560; }
+#summary .stat-box .label { font-size: 12px; color: #aaa; }
+
+/* Settings panel */
+.settings-panel { background: #16213e; border-radius: 8px; padding: 14px 20px; display: flex; flex-direction: column; gap: 10px; }
+.settings-row { display: flex; align-items: center; gap: 12px; font-size: 13px; color: #aaa; }
+.settings-row .setting-label { color: #ccc; white-space: nowrap; min-width: 80px; }
+.settings-row label { cursor: pointer; white-space: nowrap; }
+
+/* Preload hidden */
+.preload-img { position: absolute; left: -9999px; top: -9999px; width: 1px; height: 1px; opacity: 0; }
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Immich Face Fix</h1>
+
+<!-- Phase 1: Setup -->
+<div id="setup">
+  <div class="selection-row">
+    <div class="selection-col">
+      <h2>Wrong Person <small style="color:#aaa; font-weight:normal">(has misassigned faces)</small></h2>
+      <div class="selected-preview" id="wrong-preview"><span style="color:#666">Click a person below</span></div>
+      <input class="search-box" id="search-wrong" placeholder="Search people...">
+      <div class="person-grid" id="grid-wrong"></div>
+    </div>
+    <div class="selection-col">
+      <h2>Correct Person <small style="color:#aaa; font-weight:normal">(who those faces belong to)</small></h2>
+      <div class="selected-preview" id="correct-preview"><span style="color:#666">Click a person below</span></div>
+      <input class="search-box" id="search-correct" placeholder="Search people...">
+      <div class="person-grid" id="grid-correct"></div>
+    </div>
+  </div>
+  <div class="settings-panel">
+    <div class="settings-row">
+      <span class="setting-label">Filter:</span>
+      <label><input type="radio" name="scan-mode" value="both" checked> Both</label>
+      <label><input type="radio" name="scan-mode" value="duplicates"> Duplicates only</label>
+      <label><input type="radio" name="scan-mode" value="solos"> Solos only</label>
+    </div>
+    <div class="settings-row">
+      <span class="setting-label">Auto-fix:</span>
+      <label><input type="radio" name="autofix-mode" value="off"> Off</label>
+      <label><input type="radio" name="autofix-mode" value="confirm" checked> Confirm (<input type="number" id="autofix-delay" value="3" min="1" max="30" style="width:40px; background:#0f3460; color:#eee; border:1px solid #333; border-radius:4px; text-align:center; padding:1px 4px; font-size:13px;">s)</label>
+      <label><input type="radio" name="autofix-mode" value="instant"> Instant</label>
+    </div>
+    <div class="settings-row">
+      <label><input type="checkbox" id="chk-skip-both" checked> Skip photos where both people already appear</label>
+    </div>
+  </div>
+  <div style="text-align:center">
+    <button class="btn btn-primary" id="btn-start" disabled>Start Review</button>
+    <div id="session-info" style="margin-top:8px"></div>
+  </div>
+</div>
+
+<!-- Loading assets -->
+<div id="loading-assets" style="display:none">
+  <h2>Loading assets...</h2>
+  <div id="loading-status" style="margin-top:12px; color:#aaa"></div>
+</div>
+
+<!-- Review -->
+<div id="review">
+  <div class="review-header">
+    <div id="review-position"></div>
+    <div class="stats">
+      <span>Reassigned: <strong id="stat-reassigned">0</strong></span>
+      <span>Auto-fixed: <strong id="stat-autofixed">0</strong></span>
+      <span>Skipped: <strong id="stat-skipped">0</strong></span>
+    </div>
+    <div>
+      <button class="btn btn-secondary" id="btn-quit" style="font-size:12px">Quit (Q)</button>
+    </div>
+  </div>
+  <div class="photo-container" id="photo-container">
+    <img id="photo-img" src="">
+    <div class="photo-loading" id="photo-loading" style="display:none"><div class="spinner"></div></div>
+  </div>
+  <div class="face-crops" id="face-crops"></div>
+  <div class="shortcuts" id="shortcut-help"></div>
+  <div id="countdown-bar" style="display:none; text-align:center; padding:8px 0; font-size:15px; font-weight:600; color:#e94560"></div>
+</div>
+
+<!-- Summary -->
+<div id="summary">
+  <h2>Session Complete</h2>
+  <div class="stat-grid">
+    <div class="stat-box"><div class="num" id="sum-reviewed">0</div><div class="label">Reviewed</div></div>
+    <div class="stat-box"><div class="num" id="sum-reassigned">0</div><div class="label">Reassigned</div></div>
+    <div class="stat-box"><div class="num" id="sum-autofixed">0</div><div class="label">Auto-fixed</div></div>
+    <div class="stat-box"><div class="num" id="sum-skipped">0</div><div class="label">Skipped</div></div>
+    <div class="stat-box"><div class="num" id="sum-undone">0</div><div class="label">Undone</div></div>
+  </div>
+  <button class="btn btn-primary" onclick="location.reload()">Start Over</button>
+</div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+
+// State
+let allPeople = [];
+let wrongPerson = null, correctPerson = null;
+let assetIds = [];       // just IDs, not full objects
+let currentIndex = 0;    // index into assetIds
+let currentItem = null;  // { assetId, faces, wrongFaces, correctPresent }
+let undoStack = [];
+let stats = { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0 };
+let reviewedAssets = new Set();
+let storageKey = "";
+let totalAssets = 0;
+let skipBothPresent = true;
+let scanMode = "both"; // "both", "duplicates", "solos"
+let autoFixMode = "confirm"; // "off", "confirm", "instant"
+let countdownTimer = null;
+let countdownAutoFixFaces = null; // faces to auto-fix when countdown completes
+let countdownMode = "fix"; // "fix" or "skip"
+
+// --- API helpers ---
+async function api(path, opts = {}) {
+  const resp = await fetch(path, opts);
+  if (!resp.ok) throw new Error(`API ${resp.status}: ${path}`);
+  return resp;
+}
+async function apiJSON(path, opts = {}) {
+  const resp = await api(path, opts);
+  const ct = resp.headers.get("content-type") || "";
+  if (ct.includes("json")) return resp.json();
+  return resp.text();
+}
+
+// --- Shared helpers ---
+async function reassignFaceAPI(faceId, toPersonId) {
+  await api(`/api/faces/${toPersonId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: faceId })
+  });
+}
+
+function renderPersonPreview(person, previewId) {
+  $(`#${previewId}`).innerHTML = `<img src="/api/people/${person.id}/thumbnail"><span>${esc(person.name)}</span>`;
+}
+
+// --- Phase 1: Load people ---
+async function loadPeople() {
+  let page = 1, people = [];
+  while (true) {
+    const data = await apiJSON(`/api/people?withHidden=false&page=${page}&size=500`);
+    const items = data.people || data;
+    if (!Array.isArray(items) || items.length === 0) break;
+    people.push(...items);
+    if (!data.hasNextPage) break;
+    page++;
+  }
+  allPeople = people.filter(p => p.name).sort((a, b) => a.name.localeCompare(b.name));
+  renderGrid("grid-wrong", "search-wrong", "wrong");
+  renderGrid("grid-correct", "search-correct", "correct");
+  restorePersonSelection();
+}
+
+function renderGrid(gridId, searchId, role) {
+  const grid = $(`#${gridId}`);
+  const search = $(`#${searchId}`);
+  const render = (filter = "") => {
+    const lf = filter.toLowerCase();
+    const filtered = lf ? allPeople.filter(p => p.name.toLowerCase().includes(lf)) : allPeople;
+    grid.innerHTML = filtered.map(p => `
+      <div class="person-card" data-id="${p.id}">
+        <img src="/api/people/${p.id}/thumbnail" alt="${esc(p.name)}" loading="lazy">
+        <span>${esc(p.name)}</span>
+      </div>
+    `).join("");
+    const sel = role === "wrong" ? wrongPerson : correctPerson;
+    if (sel) {
+      const card = grid.querySelector(`[data-id="${sel.id}"]`);
+      if (card) card.classList.add("selected");
+    }
+  };
+  render();
+  search.addEventListener("input", () => render(search.value));
+  grid.addEventListener("click", (e) => {
+    const card = e.target.closest(".person-card");
+    if (!card) return;
+    const id = card.dataset.id;
+    const person = allPeople.find(p => p.id === id);
+    if (!person) return;
+    grid.querySelectorAll(".person-card").forEach(c => c.classList.remove("selected"));
+    card.classList.add("selected");
+    if (role === "wrong") {
+      wrongPerson = person;
+      renderPersonPreview(person, "wrong-preview");
+    } else {
+      correctPerson = person;
+      renderPersonPreview(person, "correct-preview");
+    }
+    savePersonSelection();
+    $("#btn-start").disabled = !(wrongPerson && correctPerson);
+    updateSessionInfo();
+  });
+}
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+function savePersonSelection() {
+  const sel = {};
+  if (wrongPerson) sel.wrongId = wrongPerson.id;
+  if (correctPerson) sel.correctId = correctPerson.id;
+  localStorage.setItem("facefix_people", JSON.stringify(sel));
+}
+
+function restorePersonSelection() {
+  const saved = JSON.parse(localStorage.getItem("facefix_people") || "null");
+  if (!saved) return;
+  if (saved.wrongId) {
+    const person = allPeople.find(p => p.id === saved.wrongId);
+    if (person) {
+      wrongPerson = person;
+      renderPersonPreview(person, "wrong-preview");
+      const card = $("#grid-wrong").querySelector(`[data-id="${person.id}"]`);
+      if (card) card.classList.add("selected");
+    }
+  }
+  if (saved.correctId) {
+    const person = allPeople.find(p => p.id === saved.correctId);
+    if (person) {
+      correctPerson = person;
+      renderPersonPreview(person, "correct-preview");
+      const card = $("#grid-correct").querySelector(`[data-id="${person.id}"]`);
+      if (card) card.classList.add("selected");
+    }
+  }
+  $("#btn-start").disabled = !(wrongPerson && correctPerson);
+  updateSessionInfo();
+}
+
+function getStorageKey() {
+  return `facefix_${wrongPerson.id}_${correctPerson.id}`;
+}
+
+function updateSessionInfo() {
+  if (!wrongPerson || !correctPerson) {
+    $("#session-info").innerHTML = "";
+    return;
+  }
+  const key = getStorageKey();
+  const saved = JSON.parse(localStorage.getItem(key) || "null");
+  if (saved && saved.reviewedAssets && saved.reviewedAssets.length > 0) {
+    const count = saved.reviewedAssets.length;
+    const s = saved.stats || {};
+    $("#session-info").innerHTML = `
+      <span style="color:#aaa; font-size:13px">
+        Previous session: ${count} reviewed, ${s.reassigned || 0} reassigned, ${s.autoFixed || 0} auto-fixed
+      </span>
+      <button class="btn-link" id="btn-reset-session">Reset session</button>
+    `;
+    $("#btn-reset-session").addEventListener("click", () => {
+      if (confirm("Clear all progress for this person pair?")) {
+        localStorage.removeItem(key);
+        updateSessionInfo();
+      }
+    });
+  } else {
+    $("#session-info").innerHTML = "";
+  }
+}
+
+// --- Start session: fetch asset IDs only, then go straight to review ---
+async function startSession() {
+  if (wrongPerson.id === correctPerson.id) { alert("Pick two different people."); return; }
+  skipBothPresent = $("#chk-skip-both").checked;
+  scanMode = document.querySelector('input[name="scan-mode"]:checked').value;
+  autoFixMode = document.querySelector('input[name="autofix-mode"]:checked').value;
+  storageKey = getStorageKey();
+
+  // Load saved progress
+  const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
+  if (saved) {
+    stats = saved.stats || { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0 };
+    if (stats.autoFixed === undefined) stats.autoFixed = 0;
+    undoStack = saved.undoStack || [];
+    reviewedAssets = new Set(saved.reviewedAssets || []);
+  } else {
+    stats = { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0 };
+    undoStack = [];
+    reviewedAssets = new Set();
+  }
+
+  $("#setup").style.display = "none";
+  $("#loading-assets").style.display = "block";
+  $("#loading-status").textContent = "Fetching asset list...";
+
+  // Fetch asset IDs via search API (paginated, fast — no face data)
+  assetIds = [];
+  let searchPage = 1;
+  while (true) {
+    const result = await apiJSON(`/api/search/metadata`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ personIds: [wrongPerson.id], size: 1000, page: searchPage })
+    });
+    const items = result.assets?.items || result.items || result;
+    if (!Array.isArray(items) || items.length === 0) break;
+    assetIds.push(...items.map(a => a.id));
+    $("#loading-status").textContent = `Found ${assetIds.length} assets...`;
+    if (!result.assets?.nextPage && !result.nextPage) break;
+    searchPage++;
+  }
+
+  totalAssets = assetIds.length;
+
+  // Filter out already-reviewed
+  assetIds = assetIds.filter(id => !reviewedAssets.has(id));
+
+  if (assetIds.length === 0 && totalAssets === 0) {
+    alert("No assets found for this person.");
+    location.reload();
+    return;
+  }
+
+  $("#loading-assets").style.display = "none";
+
+  if (assetIds.length === 0) {
+    // All reviewed already
+    showSummary();
+    return;
+  }
+
+  currentIndex = 0;
+  console.log(`[review] Wrong person:`, wrongPerson);
+  console.log(`[review] Correct person:`, correctPerson);
+  $("#review").style.display = "block";
+  showNextAsset();
+}
+
+// --- Lazy per-asset face loading ---
+async function showNextAsset() {
+  cancelCountdown();
+  $("#photo-loading").style.display = "flex";
+  while (currentIndex < assetIds.length) {
+    const assetId = assetIds[currentIndex];
+
+    updatePositionHeader();
+
+    // Fetch faces for just this one asset
+    let faces;
+    try {
+      faces = await apiJSON(`/api/faces?id=${assetId}`);
+    } catch {
+      try {
+        faces = await apiJSON(`/api/faces?assetId=${assetId}`);
+      } catch {
+        faces = [];
+      }
+    }
+
+    const wrongFaces = faces.filter(f => f.person && f.person.id === wrongPerson.id);
+    const correctPresent = faces.some(f => f.person && f.person.id === correctPerson.id);
+
+    // No wrong faces left (already fixed or changed) — auto-skip
+    if (wrongFaces.length === 0) {
+      console.log(`[skip] ${assetId}: no wrong faces found (already fixed or changed)`);
+      markReviewed(assetId);
+      currentIndex++;
+      continue;
+    }
+
+    // Both people present — skip if user chose to (already fixed photos)
+    if (skipBothPresent && correctPresent) {
+      console.log(`[skip] ${assetId}: both people already present`);
+      markReviewed(assetId);
+      currentIndex++;
+      continue;
+    }
+
+    // Determine mode: dup (multiple wrong faces, or wrong + correct coexist) vs solo
+    const isDup = wrongFaces.length >= 2 || (wrongFaces.length >= 1 && correctPresent);
+
+    // Filter by scan mode (don't mark as reviewed — user may review in other mode later)
+    if (scanMode === "duplicates" && !isDup) { console.log(`[skip] ${assetId}: not a duplicate (scan mode: duplicates only)`); currentIndex++; continue; }
+    if (scanMode === "solos" && isDup) { console.log(`[skip] ${assetId}: not a solo (scan mode: solos only)`); currentIndex++; continue; }
+
+    currentItem = { assetId, faces, wrongFaces, correctPresent, isDup };
+
+    // Auto-fix logic: check if Immich's top suggestion matches correctPerson
+    if (autoFixMode !== "off") {
+      const autoFixResult = await tryAutoFix(wrongFaces, assetId);
+      if (autoFixResult && autoFixResult.action === "instant") {
+        currentIndex++;
+        continue;
+      }
+      if (autoFixResult && autoFixResult.action === "confirm") {
+        currentItem.autoFixableFaces = autoFixResult.facesToFix;
+      }
+      if (autoFixResult && autoFixResult.action === "confirm-skip") {
+        currentItem.autoSkipPending = true;
+      }
+    }
+
+    // Load photo
+    const img = $("#photo-img");
+    img.src = `/api/assets/${assetId}/thumbnail?size=preview`;
+    img.onload = () => {
+      $("#photo-loading").style.display = "none";
+      drawOverlays();
+      if (currentItem && currentItem.autoFixableFaces && autoFixMode === "confirm") {
+        startCountdown(currentItem.autoFixableFaces, "fix");
+      }
+      if (currentItem && currentItem.autoSkipPending && autoFixMode === "confirm") {
+        startCountdown([], "skip");
+      }
+    };
+
+    // Update shortcuts
+    if (isDup) {
+      const nums = wrongFaces.map((_, i) => `<kbd>${i + 1}</kbd>`).join(" / ");
+      $("#shortcut-help").innerHTML = `${nums} = reassign to ${esc(correctPerson.name)} &nbsp; <kbd>S</kbd> skip &nbsp; <kbd>Z</kbd> undo &nbsp; <kbd>Q</kbd> quit`;
+    } else {
+      $("#shortcut-help").innerHTML = `<kbd>Y</kbd> reassign to ${esc(correctPerson.name)} &nbsp; <kbd>N</kbd> keep as ${esc(wrongPerson.name)} &nbsp; <kbd>S</kbd> skip &nbsp; <kbd>Z</kbd> undo &nbsp; <kbd>Q</kbd> quit`;
+    }
+
+    // Preload next asset's thumbnail
+    preloadNext();
+    return;
+  }
+
+  // No more assets
+  $("#photo-loading").style.display = "none";
+  showSummary();
+}
+
+function updatePositionHeader() {
+  const remaining = assetIds.length - currentIndex;
+  const reviewed = reviewedAssets.size;
+  $("#review-position").innerHTML = `Asset <strong>${currentIndex + 1}</strong> / ${assetIds.length} &nbsp; (${remaining} left) &nbsp; | &nbsp; Total reviewed: ${reviewed} / ${totalAssets}`;
+  $("#stat-reassigned").textContent = stats.reassigned;
+  $("#stat-autofixed").textContent = stats.autoFixed;
+  $("#stat-skipped").textContent = stats.skipped;
+}
+
+function drawOverlays() {
+  if (!currentItem) return;
+  const img = $("#photo-img");
+  const container = $("#photo-container");
+
+  container.querySelectorAll(".face-box").forEach(el => el.remove());
+
+  const imgRect = img.getBoundingClientRect();
+  const contRect = container.getBoundingClientRect();
+  const natW = img.naturalWidth, natH = img.naturalHeight;
+  const dispW = imgRect.width, dispH = imgRect.height;
+  const offX = imgRect.left - contRect.left, offY = imgRect.top - contRect.top;
+
+  const faces = currentItem.wrongFaces;
+
+  const isAutoFixable = !!(currentItem.autoFixableFaces && currentItem.autoFixableFaces.length > 0);
+  const isAutoSkipPending = !!currentItem.autoSkipPending;
+  const autoFixFaceIds = new Set((currentItem.autoFixableFaces || []).map(f => f.id));
+
+  // Draw face boxes and crops in a single pass
+  const cropsDiv = $("#face-crops");
+  cropsDiv.innerHTML = "";
+  const scaleX = dispW / natW, scaleY = dispH / natH;
+
+  faces.forEach((face, i) => {
+    if (face.boundingBoxX1 === undefined) return;
+
+    // Blue = correctly assigned (auto-skip), Green = will be reassigned (auto-fix), Red = manual
+    const color = isAutoSkipPending ? "#2196F3" : autoFixFaceIds.has(face.id) ? "#4CAF50" : isAutoFixable ? "#2196F3" : "#e94560";
+    const labelName = isAutoSkipPending ? wrongPerson.name : autoFixFaceIds.has(face.id) ? correctPerson.name : isAutoFixable ? wrongPerson.name : '';
+    const labelText = (isAutoSkipPending || isAutoFixable) ? `✓${i + 1}&nbsp;${labelName}` : `${i + 1}`;
+
+    // Bounding box overlay
+    const x1 = face.boundingBoxX1 * scaleX + offX;
+    const y1 = face.boundingBoxY1 * scaleY + offY;
+    const x2 = face.boundingBoxX2 * scaleX + offX;
+    const y2 = face.boundingBoxY2 * scaleY + offY;
+    const box = document.createElement("div");
+    box.className = "face-box";
+    box.style.cssText = `left:${x1}px;top:${y1}px;width:${x2 - x1}px;height:${y2 - y1}px;border-color:${color};`;
+    box.innerHTML = `<span class="face-label" style="background:${color}">${labelText}</span>`;
+    container.appendChild(box);
+
+    // Face crop
+    const cropItem = document.createElement("div");
+    cropItem.className = "face-crop-item";
+    const canvas = document.createElement("canvas");
+    const sx = face.boundingBoxX1, sy = face.boundingBoxY1;
+    const sw = face.boundingBoxX2 - sx, sh = face.boundingBoxY2 - sy;
+    canvas.width = sw; canvas.height = sh;
+    canvas.style.width = `${Math.min(120, sw)}px`;
+    canvas.style.height = `${Math.min(120, sh)}px`;
+    canvas.style.borderColor = color;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    const label = document.createElement("span");
+    label.className = "crop-label";
+    label.textContent = currentItem.isDup ? `[${i + 1}]` : "";
+    cropItem.appendChild(canvas);
+    cropItem.appendChild(label);
+    cropsDiv.appendChild(cropItem);
+  });
+}
+
+function preloadNext() {
+  const nextIdx = currentIndex + 1;
+  if (nextIdx < assetIds.length) {
+    new Image().src = `/api/assets/${assetIds[nextIdx]}/thumbnail?size=preview`;
+  }
+}
+
+function markReviewed(assetId) {
+  reviewedAssets.add(assetId);
+  saveProgress();
+}
+
+async function reassignFace(faceId, assetId) {
+  await reassignFaceAPI(faceId, correctPerson.id);
+  undoStack.push({ faceId, oldPersonId: wrongPerson.id, assetId });
+  stats.reassigned++;
+  stats.reviewed++;
+  markReviewed(assetId);
+}
+
+async function handleDuplicateKey(num) {
+  if (!currentItem || !currentItem.isDup) return;
+  if (num < 1 || num > currentItem.wrongFaces.length) return;
+  const face = currentItem.wrongFaces[num - 1];
+  await reassignFace(face.id, currentItem.assetId);
+  currentIndex++;
+  showNextAsset();
+}
+
+async function handleSoloReassign(reassign) {
+  if (!currentItem || currentItem.isDup) return;
+  if (reassign) {
+    await reassignFace(currentItem.wrongFaces[0].id, currentItem.assetId);
+  } else {
+    console.log(`[skip] ${currentItem.assetId}: kept as ${wrongPerson.name} (user pressed N)`);
+    stats.skipped++;
+    stats.reviewed++;
+    markReviewed(currentItem.assetId);
+  }
+  currentIndex++;
+  showNextAsset();
+}
+
+function skip() {
+  if (!currentItem) return;
+  console.log(`[skip] ${currentItem.assetId}: manually skipped by user`);
+  stats.skipped++;
+  stats.reviewed++;
+  markReviewed(currentItem.assetId);
+  currentIndex++;
+  showNextAsset();
+}
+
+async function undo() {
+  if (undoStack.length === 0) return;
+  const action = undoStack.pop();
+  await reassignFaceAPI(action.faceId, action.oldPersonId);
+  if (action.wasAutoFixed) {
+    stats.autoFixed--;
+  } else {
+    stats.reassigned--;
+  }
+  stats.undone++;
+  stats.reviewed--;
+  // Remove from reviewed so it can be re-reviewed
+  reviewedAssets.delete(action.assetId);
+  saveProgress();
+  if (currentIndex > 0) currentIndex--;
+  showNextAsset();
+}
+
+function saveProgress() {
+  const saved = {
+    reviewedAssets: [...reviewedAssets],
+    stats,
+    undoStack
+  };
+  localStorage.setItem(storageKey, JSON.stringify(saved));
+}
+
+function showSummary() {
+  $("#review").style.display = "none";
+  $("#summary").style.display = "block";
+  cancelCountdown();
+  $("#sum-reviewed").textContent = stats.reviewed;
+  $("#sum-reassigned").textContent = stats.reassigned;
+  $("#sum-autofixed").textContent = stats.autoFixed;
+  $("#sum-skipped").textContent = stats.skipped;
+  $("#sum-undone").textContent = stats.undone;
+  currentItem = null;
+}
+
+// --- Auto-fix helpers ---
+// Returns "instant" if auto-fixed immediately, "confirm" if countdown should start, or null
+// Per-face logic: top suggestion = correctPerson → reassign, top = wrongPerson → leave (correctly assigned), other → bail to manual
+async function tryAutoFix(wrongFaces, assetId) {
+  const facesToFix = [];
+  for (const face of wrongFaces) {
+    const top = await getTopSuggestion(face.id);
+    const label = top ? `${top.name} (${top.id})` : "none";
+    if (top && top.id === correctPerson.id) {
+      console.log(`[autofix] face ${face.id} → top suggestion: ${label} ✓ fix`);
+      facesToFix.push(face);
+    } else if (top && top.id === wrongPerson.id) {
+      console.log(`[autofix] face ${face.id} → top suggestion: ${label} ✓ correctly assigned, skip`);
+      // Face is correctly assigned to wrongPerson — leave it alone
+    } else {
+      console.log(`[autofix] face ${face.id} → top suggestion: ${label} ✗ unknown, manual review`);
+      return null;
+    }
+  }
+  // All faces resolved: some to fix, some correctly assigned
+  if (facesToFix.length === 0) {
+    // All faces are correctly assigned to wrongPerson — auto-advance
+    if (autoFixMode === "instant") {
+      console.log(`[autofix] ${assetId}: all faces correctly assigned, auto-skipping`);
+      stats.skipped++;
+      stats.reviewed++;
+      markReviewed(assetId);
+      updatePositionHeader();
+      return { action: "instant" };
+    }
+    return { action: "confirm-skip" };
+  }
+  if (autoFixMode === "instant") {
+    for (const face of facesToFix) {
+      await reassignFaceAPI(face.id, correctPerson.id);
+      undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, assetId, wasAutoFixed: true });
+    }
+    stats.autoFixed += facesToFix.length;
+    stats.reviewed++;
+    markReviewed(assetId);
+    updatePositionHeader();
+    return { action: "instant" };
+  }
+  return { action: "confirm", facesToFix };
+}
+
+async function getTopSuggestion(faceId) {
+  const people = await apiJSON(`/api/people?closestAssetId=${faceId}&withHidden=true&page=1&size=1`);
+  const list = people.people || people;
+  return Array.isArray(list) && list.length > 0 ? list[0] : null;
+}
+
+async function autoReassignCurrent() {
+  if (!countdownAutoFixFaces || !currentItem) return;
+  const faces = countdownAutoFixFaces;
+  countdownAutoFixFaces = null;
+  for (const face of faces) {
+    await reassignFaceAPI(face.id, correctPerson.id);
+    undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, assetId: currentItem.assetId, wasAutoFixed: true });
+  }
+  stats.autoFixed += faces.length;
+  stats.reviewed++;
+  markReviewed(currentItem.assetId);
+  currentIndex++;
+  showNextAsset();
+}
+
+function autoSkipCurrent() {
+  if (!currentItem) return;
+  console.log(`[autofix] ${currentItem.assetId}: auto-skipped (all faces correctly assigned)`);
+  stats.skipped++;
+  stats.reviewed++;
+  markReviewed(currentItem.assetId);
+  currentIndex++;
+  showNextAsset();
+}
+
+function startCountdown(faces, mode) {
+  countdownAutoFixFaces = faces;
+  countdownMode = mode || "fix";
+  let remaining = parseInt($("#autofix-delay").value) || 3;
+  const bar = $("#countdown-bar");
+  bar.style.display = "block";
+  const faceCount = faces.length;
+  const targetName = correctPerson.name || "correct person";
+  const getMessage = (secs) => countdownMode === "skip"
+    ? `Auto-skipping — faces appear correctly assigned in ${secs}s (any key to cancel)`
+    : `Auto-fixing ${faceCount} face${faceCount !== 1 ? "s" : ""} → ${targetName} in ${secs}s (any key to cancel)`;
+  bar.style.color = countdownMode === "skip" ? "#2196F3" : "#e94560";
+  bar.textContent = getMessage(remaining);
+  countdownTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(countdownTimer);
+      countdownTimer = null;
+      bar.style.display = "none";
+      if (countdownMode === "skip") {
+        autoSkipCurrent();
+      } else {
+        autoReassignCurrent();
+      }
+    } else {
+      bar.textContent = getMessage(remaining);
+    }
+  }, 1000);
+}
+
+function cancelCountdown() {
+  if (countdownTimer) {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
+    $("#countdown-bar").style.display = "none";
+    countdownAutoFixFaces = null;
+  }
+}
+
+// --- Keyboard handler ---
+document.addEventListener("keydown", (e) => {
+  if ($("#review").style.display === "none") return;
+  if (!currentItem) return;
+  const key = e.key.toLowerCase();
+
+  // Handle countdown cancellation
+  if (countdownTimer) {
+    cancelCountdown();
+    if (key === "escape") return; // Escape just cancels, no further action
+    // Other keys cancel and fall through to their normal action
+  }
+
+  if (currentItem.isDup) {
+    const num = parseInt(key);
+    if (num >= 1 && num <= 9) { handleDuplicateKey(num); return; }
+  } else {
+    if (key === "y") { handleSoloReassign(true); return; }
+    if (key === "n") { handleSoloReassign(false); return; }
+  }
+
+  if (key === "s") skip();
+  else if (key === "z") undo();
+  else if (key === "q") showSummary();
+});
+
+// --- Button handlers ---
+$("#btn-start").addEventListener("click", startSession);
+$("#btn-quit").addEventListener("click", showSummary);
+
+// Handle window resize to redraw overlays
+window.addEventListener("resize", () => {
+  if ($("#review").style.display === "none") return;
+  if (currentItem) drawOverlays();
+});
+
+// --- Init ---
+loadPeople();
+</script>
+</body>
+</html>
