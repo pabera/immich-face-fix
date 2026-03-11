@@ -395,8 +395,12 @@ async function startSession() {
 }
 
 // --- Lazy per-asset face loading ---
+let skipAutoFixOnce = false; // set by undo to prevent auto-fix on the undone asset
+
 async function showNextAsset() {
   cancelCountdown();
+  const shouldSkipAutoFix = skipAutoFixOnce;
+  skipAutoFixOnce = false;
   $("#photo-loading").style.display = "flex";
   while (currentIndex < assetIds.length) {
     const assetId = assetIds[currentIndex];
@@ -444,7 +448,8 @@ async function showNextAsset() {
     currentItem = { assetId, faces, wrongFaces, correctPresent, isDup };
 
     // Auto-fix logic: check if Immich's top suggestion matches correctPerson
-    if (autoFixMode !== "off") {
+    // Skip auto-fix if we got here via undo — user wants to manually review
+    if (autoFixMode !== "off" && !shouldSkipAutoFix) {
       const autoFixResult = await tryAutoFix(wrongFaces, assetId);
       if (autoFixResult && autoFixResult.action === "instant") {
         currentIndex++;
@@ -631,6 +636,7 @@ async function undo() {
   reviewedAssets.delete(action.assetId);
   saveProgress();
   if (currentIndex > 0) currentIndex--;
+  skipAutoFixOnce = true;
   showNextAsset();
 }
 
