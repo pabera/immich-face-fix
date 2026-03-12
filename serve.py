@@ -49,7 +49,12 @@ def main():
             super().__init__(*a, directory=directory, **kw)
 
         def do_GET(self):
-            if self.path.startswith("/api/"):
+            if self.path == "/api/_immich-url":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps({"url": immich_url}).encode())
+            elif self.path.startswith("/api/"):
                 self._proxy("GET")
             else:
                 super().do_GET()
@@ -59,6 +64,9 @@ def main():
 
         def do_POST(self):
             self._proxy("POST")
+
+        def do_DELETE(self):
+            self._proxy("DELETE")
 
         def _proxy(self, method):
             target = immich_url + self.path

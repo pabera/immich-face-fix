@@ -130,7 +130,8 @@ h2 { margin-bottom: 12px; font-size: 1.2em; }
       <span>Unassigned: <strong id="stat-unassigned">0</strong></span>
       <span>Skipped: <strong id="stat-skipped">0</strong></span>
     </div>
-    <div>
+    <div style="display:flex; gap:8px; align-items:center">
+      <a id="immich-link" href="#" target="_blank" style="display:none; font-size:12px; color:#e94560; text-decoration:none" title="Open in Immich">↗ Immich</a>
       <button class="btn btn-secondary" id="btn-quit" style="font-size:12px">Quit (Q)</button>
     </div>
   </div>
@@ -175,6 +176,7 @@ let storageKey = "";
 let totalAssets = 0;
 let skipBothPresent = true;
 let scanMode = "both"; // "both", "duplicates", "solos"
+let immichBaseUrl = ""; // populated from proxy config
 let autoFixMode = "confirm"; // "off", "confirm", "instant"
 let countdownTimer = null;
 let countdownAutoFixFaces = null; // faces to auto-fix when countdown completes
@@ -523,6 +525,14 @@ function updatePositionHeader() {
   $("#stat-autofixed").textContent = stats.autoFixed;
   $("#stat-unassigned").textContent = stats.unassigned;
   $("#stat-skipped").textContent = stats.skipped;
+  // Update Immich deep link
+  const link = $("#immich-link");
+  if (immichBaseUrl && currentIndex < assetIds.length) {
+    link.href = `${immichBaseUrl}/photos/${assetIds[currentIndex]}`;
+    link.style.display = "";
+  } else {
+    link.style.display = "none";
+  }
 }
 
 function drawOverlays() {
@@ -889,6 +899,7 @@ window.addEventListener("resize", () => {
 
 // --- Init ---
 loadPeople();
+apiJSON("/api/_immich-url").then(data => { immichBaseUrl = (data && data.url) || ""; }).catch(() => {});
 </script>
 </body>
 </html>
