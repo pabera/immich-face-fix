@@ -31,6 +31,8 @@ Immich does **not** use averaged embeddings per person. It stores every individu
 - You don't need to fix every photo; even a subset of corrections across age ranges significantly improves accuracy
 - As subjects age and their features diverge, recognition naturally improves on its own
 
+![Immich Face Fix review UI](screenshot.png)
+
 ## Features
 
 - **Person pair selection** — pick the "wrong" person (has misassigned faces) and the "correct" person (who those faces belong to)
