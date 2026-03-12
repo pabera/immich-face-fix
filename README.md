@@ -37,7 +37,8 @@ Immich does **not** use averaged embeddings per person. It stores every individu
 - **Smart filtering** — review duplicates only (photos where both people appear), solos only, or both
 - **Auto-fix mode** — when Immich's own top suggestion matches the correct person, auto-reassign instantly or with a configurable countdown you can cancel
 - **Face overlays & crops** — bounding boxes on the full photo plus zoomed-in face crops so you can see exactly what you're reassigning
-- **Keyboard-driven** — `Y`/`N` for solo faces, `1`-`9` to pick which face in multi-face photos, `S` skip, `Z` undo, `Q` quit
+- **Unassign faces** — press `U` to remove a face from the wrong person entirely (creates a new unnamed person, same as Immich's "not this person"). In dup mode, press `U` then a number to pick which face
+- **Keyboard-driven** — `Y`/`N` for solo faces, `1`-`9` to pick which face in multi-face photos, `U` to unassign, `S` skip, `Z` undo, `Q` quit
 - **Session persistence** — progress saved to localStorage, resume where you left off across browser sessions
 - **Full undo stack** — every reassignment can be reversed
 - **Skip-both-present** — automatically skip photos where both people already appear correctly
@@ -60,6 +61,8 @@ When creating the API key in Immich (Account Settings → API Keys), grant the f
 | `Asset.View` | Load photo thumbnails/previews |
 | `Face.Read` | Get face bounding boxes per asset |
 | `Face.Update` | Reassign a face to a different person |
+| `Person.Create` | Create unnamed person for unassign action |
+| `Person.Delete` | Clean up orphaned unnamed person on undo |
 | `Person.Read` | List people, get thumbnails, get top suggestion |
 | `Person.Reassign` | Reassign faces between people |
 | `Server.About` | Connectivity check on startup |
@@ -96,10 +99,10 @@ The tool opens automatically in your browser at `http://localhost:8080`.
 3. **Configure settings** — filter mode, auto-fix behavior, skip-both-present
 4. **Start Review** — the tool fetches all assets assigned to the wrong person and walks you through them one by one
 5. **Review each photo:**
-   - **Solo face** (one wrong face on the photo): `Y` to reassign, `N` to keep
-   - **Duplicate faces** (multiple wrong faces): press `1`, `2`, etc. to reassign a specific face
+   - **Solo face** (one wrong face on the photo): `Y` to reassign, `N` to keep, `U` to unassign
+   - **Duplicate faces** (multiple wrong faces): press `1`, `2`, etc. to reassign a specific face; `U` then a number to unassign
    - `S` to skip, `Z` to undo last action, `Q` to quit
-6. **Summary** — shows totals for reviewed, reassigned, auto-fixed, skipped, and undone
+6. **Summary** — shows totals for reviewed, reassigned, auto-fixed, unassigned, skipped, and undone
 
 ## How It Works
 

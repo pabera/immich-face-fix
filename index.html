@@ -127,6 +127,7 @@ h2 { margin-bottom: 12px; font-size: 1.2em; }
     <div class="stats">
       <span>Reassigned: <strong id="stat-reassigned">0</strong></span>
       <span>Auto-fixed: <strong id="stat-autofixed">0</strong></span>
+      <span>Unassigned: <strong id="stat-unassigned">0</strong></span>
       <span>Skipped: <strong id="stat-skipped">0</strong></span>
     </div>
     <div>
@@ -149,6 +150,7 @@ h2 { margin-bottom: 12px; font-size: 1.2em; }
     <div class="stat-box"><div class="num" id="sum-reviewed">0</div><div class="label">Reviewed</div></div>
     <div class="stat-box"><div class="num" id="sum-reassigned">0</div><div class="label">Reassigned</div></div>
     <div class="stat-box"><div class="num" id="sum-autofixed">0</div><div class="label">Auto-fixed</div></div>
+    <div class="stat-box"><div class="num" id="sum-unassigned">0</div><div class="label">Unassigned</div></div>
     <div class="stat-box"><div class="num" id="sum-skipped">0</div><div class="label">Skipped</div></div>
     <div class="stat-box"><div class="num" id="sum-undone">0</div><div class="label">Undone</div></div>
   </div>
@@ -166,7 +168,8 @@ let assetIds = [];       // just IDs, not full objects
 let currentIndex = 0;    // index into assetIds
 let currentItem = null;  // { assetId, faces, wrongFaces, correctPresent }
 let undoStack = [];
-let stats = { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0 };
+let stats = { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0, unassigned: 0 };
+let unassignMode = false; // for dup mode: press U then a number
 let reviewedAssets = new Set();
 let storageKey = "";
 let totalAssets = 0;
@@ -197,6 +200,21 @@ async function reassignFaceAPI(faceId, toPersonId) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ id: faceId })
   });
+}
+
+async function unassignFaceAPI(faceId) {
+  // Create a new unnamed person and move the face there (same as Immich's "not this person")
+  const newPerson = await apiJSON('/api/people', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  });
+  await api(`/api/faces/${newPerson.id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: faceId })
+  });
+  return newPerson.id;
 }
 
 function renderPersonPreview(person, previewId) {
@@ -337,12 +355,13 @@ async function startSession() {
   // Load saved progress
   const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
   if (saved) {
-    stats = saved.stats || { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0 };
+    stats = saved.stats || { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0, unassigned: 0 };
     if (stats.autoFixed === undefined) stats.autoFixed = 0;
+    if (stats.unassigned === undefined) stats.unassigned = 0;
     undoStack = saved.undoStack || [];
     reviewedAssets = new Set(saved.reviewedAssets || []);
   } else {
-    stats = { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0 };
+    stats = { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0, unassigned: 0 };
     undoStack = [];
     reviewedAssets = new Set();
   }
@@ -399,6 +418,7 @@ let skipAutoFixOnce = false; // set by undo to prevent auto-fix on the undone as
 
 async function showNextAsset() {
   cancelCountdown();
+  unassignMode = false;
   const shouldSkipAutoFix = skipAutoFixOnce;
   skipAutoFixOnce = false;
   $("#photo-loading").style.display = "flex";
@@ -480,9 +500,9 @@ async function showNextAsset() {
     // Update shortcuts
     if (isDup) {
       const nums = wrongFaces.map((_, i) => `<kbd>${i + 1}</kbd>`).join(" / ");
-      $("#shortcut-help").innerHTML = `${nums} = reassign to ${esc(correctPerson.name)} &nbsp; <kbd>S</kbd> skip &nbsp; <kbd>Z</kbd> undo &nbsp; <kbd>Q</kbd> quit`;
+      $("#shortcut-help").innerHTML = `${nums} = reassign to ${esc(correctPerson.name)} &nbsp; <kbd>U</kbd>+# unassign &nbsp; <kbd>S</kbd> skip &nbsp; <kbd>Z</kbd> undo &nbsp; <kbd>Q</kbd> quit`;
     } else {
-      $("#shortcut-help").innerHTML = `<kbd>Y</kbd> reassign to ${esc(correctPerson.name)} &nbsp; <kbd>N</kbd> keep as ${esc(wrongPerson.name)} &nbsp; <kbd>S</kbd> skip &nbsp; <kbd>Z</kbd> undo &nbsp; <kbd>Q</kbd> quit`;
+      $("#shortcut-help").innerHTML = `<kbd>Y</kbd> reassign to ${esc(correctPerson.name)} &nbsp; <kbd>N</kbd> keep as ${esc(wrongPerson.name)} &nbsp; <kbd>U</kbd> unassign &nbsp; <kbd>S</kbd> skip &nbsp; <kbd>Z</kbd> undo &nbsp; <kbd>Q</kbd> quit`;
     }
 
     // Preload next asset's thumbnail
@@ -501,6 +521,7 @@ function updatePositionHeader() {
   $("#review-position").innerHTML = `Asset <strong>${currentIndex + 1}</strong> / ${assetIds.length} &nbsp; (${remaining} left) &nbsp; | &nbsp; Total reviewed: ${reviewed} / ${totalAssets}`;
   $("#stat-reassigned").textContent = stats.reassigned;
   $("#stat-autofixed").textContent = stats.autoFixed;
+  $("#stat-unassigned").textContent = stats.unassigned;
   $("#stat-skipped").textContent = stats.skipped;
 }
 
@@ -621,11 +642,42 @@ function skip() {
   showNextAsset();
 }
 
+async function handleSoloUnassign() {
+  if (!currentItem || currentItem.isDup) return;
+  const face = currentItem.wrongFaces[0];
+  const newPersonId = await unassignFaceAPI(face.id);
+  undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, newPersonId, assetId: currentItem.assetId, wasUnassign: true });
+  stats.unassigned++;
+  stats.reviewed++;
+  markReviewed(currentItem.assetId);
+  currentIndex++;
+  showNextAsset();
+}
+
+async function handleDuplicateUnassign(num) {
+  if (!currentItem || !currentItem.isDup) return;
+  if (num < 1 || num > currentItem.wrongFaces.length) return;
+  const face = currentItem.wrongFaces[num - 1];
+  const newPersonId = await unassignFaceAPI(face.id);
+  undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, newPersonId, assetId: currentItem.assetId, wasUnassign: true });
+  stats.unassigned++;
+  stats.reviewed++;
+  markReviewed(currentItem.assetId);
+  currentIndex++;
+  showNextAsset();
+}
+
 async function undo() {
   if (undoStack.length === 0) return;
   const action = undoStack.pop();
   await reassignFaceAPI(action.faceId, action.oldPersonId);
-  if (action.wasAutoFixed) {
+  // Clean up orphaned unnamed person from unassign
+  if (action.wasUnassign && action.newPersonId) {
+    try { await api(`/api/people/${action.newPersonId}`, { method: "DELETE" }); } catch (e) { console.warn("[undo] Failed to delete orphaned person:", e); }
+  }
+  if (action.wasUnassign) {
+    stats.unassigned--;
+  } else if (action.wasAutoFixed) {
     stats.autoFixed--;
   } else {
     stats.reassigned--;
@@ -656,6 +708,7 @@ function showSummary() {
   $("#sum-reviewed").textContent = stats.reviewed;
   $("#sum-reassigned").textContent = stats.reassigned;
   $("#sum-autofixed").textContent = stats.autoFixed;
+  $("#sum-unassigned").textContent = stats.unassigned;
   $("#sum-skipped").textContent = stats.skipped;
   $("#sum-undone").textContent = stats.undone;
   currentItem = null;
@@ -768,6 +821,18 @@ function startCountdown(faces, mode) {
   }, 1000);
 }
 
+function updateUnassignIndicator() {
+  const help = $("#shortcut-help");
+  if (!help) return;
+  if (unassignMode) {
+    help.dataset.origHtml = help.innerHTML;
+    help.innerHTML = `<strong style="color:#e94560">UNASSIGN MODE</strong> — press a number to unassign that face, or <kbd>Esc</kbd> to cancel`;
+  } else if (help.dataset.origHtml) {
+    help.innerHTML = help.dataset.origHtml;
+    delete help.dataset.origHtml;
+  }
+}
+
 function cancelCountdown() {
   if (countdownTimer) {
     clearInterval(countdownTimer);
@@ -790,12 +855,21 @@ document.addEventListener("keydown", (e) => {
     // Other keys cancel and fall through to their normal action
   }
 
+  // Cancel unassign mode on Escape
+  if (key === "escape" && unassignMode) { unassignMode = false; updateUnassignIndicator(); return; }
+
   if (currentItem.isDup) {
     const num = parseInt(key);
-    if (num >= 1 && num <= 9) { handleDuplicateKey(num); return; }
+    if (num >= 1 && num <= 9) {
+      if (unassignMode) { unassignMode = false; updateUnassignIndicator(); handleDuplicateUnassign(num); return; }
+      handleDuplicateKey(num);
+      return;
+    }
+    if (key === "u") { unassignMode = !unassignMode; updateUnassignIndicator(); return; }
   } else {
     if (key === "y") { handleSoloReassign(true); return; }
     if (key === "n") { handleSoloReassign(false); return; }
+    if (key === "u") { handleSoloUnassign(); return; }
   }
 
   if (key === "s") skip();
