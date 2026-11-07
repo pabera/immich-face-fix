@@ -67,6 +67,25 @@ h2 { margin-bottom: 12px; font-size: 1.2em; }
 .settings-row .setting-label { color: #ccc; white-space: nowrap; min-width: 80px; }
 .settings-row label { cursor: pointer; white-space: nowrap; }
 
+/* Automatic clean-up */
+#auto { display: none; }
+.auto-buttons { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.auto-note { font-size: 13px; color: #aaa; line-height: 1.5; margin-bottom: 10px; }
+.auto-note strong { color: #eee; }
+.auto-warning { color: #ffb74d; }
+.auto-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 14px 0; align-items: center; }
+.auto-section { margin-top: 18px; }
+.cluster-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: #16213e; border-radius: 8px; margin-bottom: 6px; font-size: 13px; flex-wrap: wrap; }
+.cluster-row img { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; }
+.cluster-row select { background: #0f3460; color: #eee; border: 1px solid #333; border-radius: 4px; padding: 3px; font-size: 13px; }
+.cluster-why { color: #aaa; font-size: 12px; }
+.tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+.tile { background: #16213e; border: 2px solid transparent; border-radius: 8px; padding: 6px; cursor: pointer; font: inherit; color: #eee; text-align: center; }
+.tile.rejected { border-color: #e94560; }
+.tile.taught { border-color: #4CAF50; }
+.tile .crop { width: 96px; height: 96px; margin: 0 auto 4px; background-color: #000; background-repeat: no-repeat; border-radius: 6px; }
+.tile span { font-size: 11px; display: block; word-break: break-word; }
+
 /* Preload hidden */
 .preload-img { position: absolute; left: -9999px; top: -9999px; width: 1px; height: 1px; opacity: 0; }
 </style>
@@ -77,6 +96,14 @@ h2 { margin-bottom: 12px; font-size: 1.2em; }
 
 <!-- Phase 1: Setup -->
 <div id="setup">
+  <div class="settings-panel" id="auto-panel">
+    <div class="settings-row"><span class="setting-label">Automatic clean-up</span><span id="auto-availability"></span></div>
+    <div class="auto-buttons">
+      <button class="btn btn-primary" id="btn-merge" disabled>Merge unnamed people</button>
+      <button class="btn btn-primary" id="btn-sort" disabled>Sort the two people below</button>
+      <button class="btn btn-secondary" id="btn-undo-run" style="display:none"></button>
+    </div>
+  </div>
   <div class="selection-row">
     <div class="selection-col">
       <h2>Wrong Person <small style="color:#aaa; font-weight:normal">(has misassigned faces)</small></h2>
@@ -103,6 +130,11 @@ h2 { margin-bottom: 12px; font-size: 1.2em; }
       <label><input type="radio" name="autofix-mode" value="off"> Off</label>
       <label><input type="radio" name="autofix-mode" value="confirm" checked> Confirm (<input type="number" id="autofix-delay" value="3" min="1" max="30" style="width:40px; background:#0f3460; color:#eee; border:1px solid #333; border-radius:4px; text-align:center; padding:1px 4px; font-size:13px;">s)</label>
       <label><input type="radio" name="autofix-mode" value="instant"> Instant</label>
+    </div>
+    <div class="settings-row">
+      <span class="setting-label">Confidence:</span>
+      <label>Act only at <input type="number" id="min-confidence" value="97" min="80" max="99.9" step="0.5" style="width:56px; background:#0f3460; color:#eee; border:1px solid #333; border-radius:4px; text-align:center; padding:1px 4px; font-size:13px;">% or higher</label>
+      <span id="model-availability"></span>
     </div>
     <div class="settings-row">
       <label><input type="checkbox" id="chk-skip-both" checked> Skip photos where both people already appear</label>
@@ -135,6 +167,7 @@ h2 { margin-bottom: 12px; font-size: 1.2em; }
       <button class="btn btn-secondary" id="btn-quit" style="font-size:12px">Quit (Q)</button>
     </div>
   </div>
+  <div id="model-status" style="display:none; font-size:12px; color:#aaa; padding:0 4px 10px"></div>
   <div class="photo-container" id="photo-container">
     <img id="photo-img" src="">
     <div class="photo-loading" id="photo-loading" style="display:none"><div class="spinner"></div></div>
@@ -142,6 +175,12 @@ h2 { margin-bottom: 12px; font-size: 1.2em; }
   <div class="face-crops" id="face-crops"></div>
   <div class="shortcuts" id="shortcut-help"></div>
   <div id="countdown-bar" style="display:none; text-align:center; padding:8px 0; font-size:15px; font-weight:600; color:#e94560"></div>
+</div>
+
+<!-- Automatic clean-up -->
+<div id="auto">
+  <h2 id="auto-title"></h2>
+  <div id="auto-body"></div>
 </div>
 
 <!-- Summary -->
@@ -159,6 +198,7 @@ h2 { margin-bottom: 12px; font-size: 1.2em; }
 </div>
 </div>
 
+<script src="classifier.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
 
@@ -181,11 +221,26 @@ let autoFixMode = "confirm"; // "off", "confirm", "instant"
 let countdownTimer = null;
 let countdownAutoFixFaces = null; // faces to auto-fix when countdown completes
 let countdownMode = "fix"; // "fix" or "skip"
+let embeddingsEnabled = false; // serve.py was started with --psql
+let pairData = null;     // { dim, faces, embeddings } for the selected pair
+let pairFaceIndex = new Map(); // faceId -> index into pairData.faces
+let pairLogits = null;   // out-of-fold score per face; above 0 favours correctPerson
+let pairFit = null;      // summary of the latest fit
+let modelWorker = null;
+let trustedLabels = {};  // faceId -> 1 correct, 0 wrong, -1 neither, set by human decisions only
+let decisionsSinceFit = 0;
+let fitRunning = false;
+let gate = { seen: 0, agreed: 0 }; // confident recommendations a human has seen, and approved
+let autoThreshold = FaceModel.probToLogit(0.97);
+const REFIT_EVERY = 25;
 
 // --- API helpers ---
 async function api(path, opts = {}) {
   const resp = await fetch(path, opts);
-  if (!resp.ok) throw new Error(`API ${resp.status}: ${path}`);
+  if (!resp.ok) {
+    const detail = await resp.json().then((body) => body.error, () => null);
+    throw new Error(`API ${resp.status}: ${detail || path}`);
+  }
   return resp;
 }
 async function apiJSON(path, opts = {}) {
@@ -235,6 +290,7 @@ async function loadPeople() {
     page++;
   }
   allPeople = people.filter(p => p.name).sort((a, b) => a.name.localeCompare(b.name));
+  updateAutoButtons();
   renderGrid("grid-wrong", "search-wrong", "wrong");
   renderGrid("grid-correct", "search-correct", "correct");
   restorePersonSelection();
@@ -278,6 +334,7 @@ function renderGrid(gridId, searchId, role) {
     savePersonSelection();
     $("#btn-start").disabled = !(wrongPerson && correctPerson);
     updateSessionInfo();
+    updateAutoButtons();
   });
 }
 
@@ -313,6 +370,7 @@ function restorePersonSelection() {
   }
   $("#btn-start").disabled = !(wrongPerson && correctPerson);
   updateSessionInfo();
+  updateAutoButtons();
 }
 
 function getStorageKey() {
@@ -352,9 +410,19 @@ async function startSession() {
   skipBothPresent = $("#chk-skip-both").checked;
   scanMode = document.querySelector('input[name="scan-mode"]:checked').value;
   autoFixMode = document.querySelector('input[name="autofix-mode"]:checked').value;
-  storageKey = getStorageKey();
+  loadSession();
+  const minConfidence = Math.min(99.9, Math.max(80, parseFloat($("#min-confidence").value) || 97));
+  autoThreshold = FaceModel.probToLogit(minConfidence / 100);
 
-  // Load saved progress
+  $("#setup").style.display = "none";
+  $("#loading-assets").style.display = "block";
+  $("#loading-status").textContent = "Fetching asset list...";
+
+  await continueSession();
+}
+
+function loadSession() {
+  storageKey = getStorageKey();
   const saved = JSON.parse(localStorage.getItem(storageKey) || "null");
   if (saved) {
     stats = saved.stats || { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0, unassigned: 0 };
@@ -362,16 +430,18 @@ async function startSession() {
     if (stats.unassigned === undefined) stats.unassigned = 0;
     undoStack = saved.undoStack || [];
     reviewedAssets = new Set(saved.reviewedAssets || []);
+    trustedLabels = saved.trustedLabels || {};
+    gate = saved.gate || { seen: 0, agreed: 0 };
   } else {
     stats = { reassigned: 0, skipped: 0, undone: 0, reviewed: 0, autoFixed: 0, unassigned: 0 };
     undoStack = [];
     reviewedAssets = new Set();
+    trustedLabels = {};
+    gate = { seen: 0, agreed: 0 };
   }
+}
 
-  $("#setup").style.display = "none";
-  $("#loading-assets").style.display = "block";
-  $("#loading-status").textContent = "Fetching asset list...";
-
+async function continueSession() {
   // Fetch asset IDs via search API (paginated, fast — no face data)
   assetIds = [];
   let searchPage = 1;
@@ -400,19 +470,554 @@ async function startSession() {
     return;
   }
 
-  $("#loading-assets").style.display = "none";
-
   if (assetIds.length === 0) {
     // All reviewed already
+    $("#loading-assets").style.display = "none";
     showSummary();
     return;
   }
+
+  await loadPairModel();
+  $("#loading-assets").style.display = "none";
 
   currentIndex = 0;
   console.log(`[review] Wrong person:`, wrongPerson);
   console.log(`[review] Correct person:`, correctPerson);
   $("#review").style.display = "block";
   showNextAsset();
+}
+
+// --- Pair model ---
+function runFit(onProgress) {
+  const model = { dim: pairData.dim, faces: pairData.faces, embeddings: pairData.embeddings };
+  return runWorker({ model, trusted: trustedLabels }, onProgress);
+}
+
+function runWorker(message, onProgress) {
+  modelWorker = modelWorker || new Worker("classifier.js");
+  const worker = modelWorker;
+  return new Promise((resolve, reject) => {
+    worker.onmessage = ({ data }) => {
+      if (data.type === "progress") { if (onProgress) onProgress(data.progress); return; }
+      if (data.type === "error") reject(new Error(data.message));
+      else resolve(data.result);
+    };
+    worker.onerror = (e) => reject(new Error(e.message || "model worker failed"));
+    worker.postMessage(message);
+  });
+}
+
+async function refit(onProgress) {
+  fitRunning = true;
+  decisionsSinceFit = 0;
+  try {
+    const result = await runFit(onProgress);
+    if (result.ok) {
+      pairLogits = result.logits;
+      pairFit = result;
+    } else if (!pairFit) {
+      pairFit = result;
+    }
+  } finally {
+    fitRunning = false;
+  }
+  updateModelStatus();
+}
+
+async function loadPairModel() {
+  pairData = null; pairLogits = null; pairFit = null;
+  if (!embeddingsEnabled) return;
+  try {
+    $("#loading-status").textContent = "Loading face embeddings...";
+    const resp = await api(`/api/_embeddings?wrong=${wrongPerson.id}&correct=${correctPerson.id}`);
+    pairData = FaceModel.parsePayload(await resp.arrayBuffer());
+    pairFaceIndex = new Map(pairData.faces.map((f, i) => [f.id, i]));
+    $("#loading-status").textContent = `Training on ${pairData.faces.length} faces...`;
+    await refit((progress) => {
+      $("#loading-status").textContent = `Training on ${pairData.faces.length} faces... ${Math.round(progress * 100)}%`;
+    });
+  } catch (e) {
+    console.warn("[model] unavailable:", e);
+    pairFit = { ok: false, reason: e.message };
+  }
+}
+
+function scoreOf(faceId) {
+  if (!pairLogits) return null;
+  const i = pairFaceIndex.get(faceId);
+  return i === undefined ? null : pairLogits[i];
+}
+
+function setPairLabel(faceId, label) {
+  const i = pairData ? pairFaceIndex.get(faceId) : undefined;
+  if (i !== undefined) pairData.faces[i].label = label;
+}
+
+// A human decided this face. label: 1 correct person, 0 wrong person, -1 neither.
+// Returns the gate change so undo can reverse it.
+function recordDecision(faceId, label) {
+  trustedLabels[faceId] = label;
+  if (label >= 0) setPairLabel(faceId, label);
+  decisionsSinceFit++;
+  if (pairData && !fitRunning && decisionsSinceFit >= REFIT_EVERY) {
+    refit().catch((e) => console.warn("[model] refit failed:", e));
+  }
+  const rec = currentItem && currentItem.recommendation;
+  if (!rec || rec.counted) return null;
+  const expected = rec.fix.has(faceId) ? 1 : rec.keep.has(faceId) ? 0 : null;
+  if (expected === null) return null;
+  rec.counted = true;
+  const agreed = label === expected;
+  gate.seen++;
+  if (agreed) gate.agreed++;
+  return { agreed };
+}
+
+// A countdown ran out with nobody objecting.
+function recordApproval() {
+  const rec = currentItem && currentItem.recommendation;
+  if (!rec || rec.counted) return false;
+  rec.counted = true;
+  gate.seen++;
+  gate.agreed++;
+  return true;
+}
+
+function updateModelStatus() {
+  const el = $("#model-status");
+  el.style.display = "block";
+  const parts = [];
+  if (pairFit && pairFit.ok) {
+    parts.push(`Pair model: ${Math.round(pairFit.auc * 100)}% separation on ${pairFit.faceCount} faces`);
+    if (pairFit.disputed) parts.push(`${pairFit.disputed} disputed labels set aside`);
+    const learned = Object.keys(trustedLabels).length;
+    if (learned) parts.push(`${learned} of your decisions learned`);
+  } else if (pairFit) {
+    parts.push(`Pair model off (${esc(pairFit.reason)}), using Immich's suggestion`);
+  } else {
+    parts.push("Using Immich's suggestion (start serve.py with --psql for the pair model)");
+  }
+  if (autoFixMode === "instant" && !FaceModel.gateOpen(gate)) {
+    parts.push(`Instant unlocks after ${FaceModel.GATE.minSeen} approved countdowns (${gate.agreed}/${gate.seen} so far)`);
+  }
+  el.innerHTML = parts.join(" &nbsp;·&nbsp; ");
+}
+
+// --- Automatic clean-up ---
+//
+// Every change is a move of one face from one person to another, journaled before
+// it happens, so a whole run can be reversed. Immich's own merge endpoint can't be
+// undone: it deletes the source person.
+const AUDIT_SIZE = 24, TEACH_SIZE = 24, AUDIT_MAX_REJECTED = 0.05;
+const APPLY_CONCURRENCY = 6, RUNS_KEY = "facefix_runs", MAX_RUNS = 20;
+let scan = null;   // { data, match, minSim, picks } from the last merge scan
+let sorter = null; // { plan, faces, audit, teach, rejected, taught } for the selected pair
+
+function setAuto(title, html) {
+  $("#setup").style.display = "none";
+  $("#auto").style.display = "block";
+  $("#auto-title").textContent = title;
+  $("#auto-body").innerHTML = html;
+}
+const autoProgress = (text) => setAuto($("#auto-title").textContent, `<p class="auto-note">${esc(text)}</p>`);
+const leaveAuto = () => location.reload();
+function autoFailed(e) {
+  setAuto("Clean-up stopped", `<p class="auto-note auto-warning">${esc(e.message || String(e))}</p>
+    <div class="auto-actions"><button class="btn btn-secondary" id="auto-back">Back</button></div>`);
+  $("#auto-back").addEventListener("click", leaveAuto);
+}
+
+function updateAutoButtons() {
+  $("#btn-merge").disabled = !embeddingsEnabled || !allPeople.length;
+  $("#btn-sort").disabled = !embeddingsEnabled || !wrongPerson || !correctPerson || wrongPerson.id === correctPerson.id;
+  if (wrongPerson && correctPerson) $("#btn-sort").textContent = `Sort ${wrongPerson.name} / ${correctPerson.name}`;
+  const undo = $("#btn-undo-run"), [last] = readRuns();
+  undo.style.display = last ? "" : "none";
+  if (last) undo.textContent = `Undo last run (${last.moves.length} faces)`;
+}
+
+function readRuns() {
+  try { return JSON.parse(localStorage.getItem(RUNS_KEY) || "[]"); } catch { return []; }
+}
+function writeRuns(runs) {
+  localStorage.setItem(RUNS_KEY, JSON.stringify(runs.slice(0, MAX_RUNS)));
+}
+
+async function forEachLimited(items, worker) {
+  let next = 0;
+  await Promise.all(Array.from({ length: APPLY_CONCURRENCY }, async () => {
+    while (next < items.length) await worker(items[next++]);
+  }));
+}
+
+// moves: [{ faceId, assetId, from, to }]. A failed journal write stops the run,
+// since changes that can't be undone are exactly what this is built to avoid.
+async function applyMoves(kind, moves) {
+  writeRuns([{ at: Date.now(), kind, moves }, ...readRuns()]);
+  const failed = [];
+  let done = 0;
+  await forEachLimited(moves, async (move) => {
+    try { await reassignFaceAPI(move.faceId, move.to); }
+    catch (e) { failed.push({ move, error: e.message }); }
+    if (++done % 25 === 0 || done === moves.length) autoProgress(`Moving faces... ${done} / ${moves.length}`);
+  });
+  scan = null;
+  return failed;
+}
+
+function showRunResult(moved, failed, undoneRun) {
+  const verb = undoneRun ? "restored" : "moved";
+  setAuto("Done", `<p class="auto-note"><strong>${moved - failed.length}</strong> faces ${verb}${failed.length ? `, <span class="auto-warning">${failed.length} failed</span> (${esc(failed[0].error)})` : ""}.
+    ${undoneRun ? "" : "This run can be undone from the start page. People left empty disappear at Immich's next nightly clean-up."}</p>
+    <div class="auto-actions"><button class="btn btn-primary" id="auto-back">Back to start</button></div>`);
+  $("#auto-back").addEventListener("click", leaveAuto);
+}
+
+async function undoLastRun() {
+  const [last, ...older] = readRuns();
+  if (!last || !confirm(`Move ${last.moves.length} faces back to where they were?`)) return;
+  setAuto("Undoing last run", `<p class="auto-note">Starting...</p>`);
+  const remade = new Map(), failed = [];
+  let done = 0;
+  // Immich may have cleaned up an emptied unnamed person since, so rebuild it.
+  const restoreTo = async (from) => {
+    if (!remade.has(from)) {
+      remade.set(from, apiJSON("/api/people", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({})
+      }).then((p) => p.id));
+    }
+    return remade.get(from);
+  };
+  await forEachLimited(last.moves, async (move) => {
+    try {
+      if (remade.has(move.from)) await reassignFaceAPI(move.faceId, await remade.get(move.from));
+      else {
+        try { await reassignFaceAPI(move.faceId, move.from); }
+        catch { await reassignFaceAPI(move.faceId, await restoreTo(move.from)); }
+      }
+    } catch (e) { failed.push({ move, error: e.message }); }
+    if (++done % 25 === 0 || done === last.moves.length) autoProgress(`Restoring faces... ${done} / ${last.moves.length}`);
+  });
+  // Anything that failed stays in the journal, so undo can be pressed again.
+  if (failed.length) writeRuns([{ ...last, moves: failed.map((f) => f.move) }, ...older]);
+  else writeRuns(older);
+  showRunResult(last.moves.length, failed, true);
+}
+
+// The two selected people are the known look-alikes.
+function lookalikeSet(data) {
+  const out = new Set();
+  data.people.forEach((p, i) => {
+    if (p.id === wrongPerson?.id || p.id === correctPerson?.id) out.add(i);
+  });
+  return out;
+}
+
+async function loadScan() {
+  if (scan) return scan;
+  autoProgress("Loading faces from the Immich database. Over SSH this can take a few minutes...");
+  const resp = await api(`/api/_gallery?owner_of=${allPeople[0].id}`);
+  const data = FaceModel.parsePayload(await resp.arrayBuffer());
+  const named = data.people.filter((p) => p.named).length;
+  autoProgress(`Comparing ${data.people.length - named} unnamed people with ${named} named people...`);
+  const match = await runWorker({ task: "match", gallery: data }, (p) => {
+    autoProgress(`Comparing ${data.people.length - named} unnamed people with ${named} named people... ${Math.round(p * 100)}%`);
+  });
+  scan = { data, match, minSim: match.rule.minSim, picks: new Map() };
+  return scan;
+}
+
+const personNameOf = (s, index) => {
+  const id = s.data.people[index].id;
+  const person = allPeople.find((p) => p.id === id);
+  return person ? person.name : "(unknown)";
+};
+
+function statusOfCluster(s, c) {
+  return FaceModel.clusterStatus(c, s.minSim, lookalikeSet(s.data));
+}
+
+async function openMerge() {
+  setAuto("Merge unnamed people", `<p class="auto-note">Starting...</p>`);
+  try { await loadScan(); renderMerge(); } catch (e) { autoFailed(e); }
+}
+
+function renderMerge() {
+  const s = scan, rule = s.match.rule, groups = { merge: [], review: [], split: [], none: [] };
+  for (const c of s.match.clusters) groups[statusOfCluster(s, c).status].push(c);
+  // Weakest first: those are the ones worth a look.
+  for (const list of [groups.merge, groups.review]) list.sort((a, b) => a.sim - b.sim);
+  for (const c of groups.merge) if (!s.picks.has(c.person)) s.picks.set(c.person, c.best);
+
+  const row = (c, why) => {
+    const options = [c.best, c.second].filter((p) => p !== null && p !== undefined)
+      .map((p) => `<option value="${p}" ${s.picks.get(c.person) === p ? "selected" : ""}>${esc(personNameOf(s, p))}</option>`).join("");
+    const inert = why ? '<option value="">Leave unnamed</option>' : '<option value="">Skip</option>';
+    return `<div class="cluster-row">
+      <img src="/api/people/${s.data.people[c.person].id}/thumbnail" alt="" loading="lazy">
+      <span>${c.size} face${c.size === 1 ? "" : "s"} →</span>
+      <select data-cluster="${c.person}">${why ? inert + options : options + inert}</select>
+      <img src="/api/people/${s.data.people[c.best].id}/thumbnail" alt="" loading="lazy">
+      <span>${Math.round(c.sim * 100)}% similar</span>
+      ${why ? `<span class="cluster-why">${esc(why)}</span>` : ""}
+    </div>`;
+  };
+  const shown = 200;
+  const section = (title, list, render) => list.length ? `<div class="auto-section"><h2>${title}</h2>${list.slice(0, shown).map(render).join("")}
+    ${list.length > shown ? `<p class="auto-note">Showing the first ${shown} of ${list.length}.</p>` : ""}</div>` : "";
+  const calibration = rule.ok
+    ? (() => {
+        const check = FaceModel.evaluateRule(rule.trials, s.minSim);
+        return `Tested on your named people: at this bar, <strong>${check.wrongTaken} of ${check.tested}</strong> test clusters went to the wrong person, and <strong>${Math.round(check.coverage * 100)}%</strong> of the ones that should match did.`;
+      })()
+    : `<span class="auto-warning">Couldn't calibrate (${esc(rule.reason)}), so nothing merges automatically. Name more people first, or set a bar here at your own risk.</span>`;
+  const pairHint = wrongPerson && correctPerson
+    ? `${esc(wrongPerson.name)} and ${esc(correctPerson.name)} are treated as look-alikes.`
+    : `<span class="auto-warning">If two people look alike, go back and select them first, so their clusters aren't merged whole.</span>`;
+
+  setAuto("Merge unnamed people", `
+    <p class="auto-note">${calibration}<br>${pairHint}</p>
+    <div class="settings-row">Merge at <input id="merge-bar" type="number" step="1" min="45" max="99" value="${s.minSim === null ? "" : Math.round(s.minSim * 100)}" style="width:56px; background:#0f3460; color:#eee; border:1px solid #333; border-radius:4px; text-align:center;">% similarity or higher</div>
+    <div class="auto-actions">
+      <button class="btn btn-primary" id="merge-apply"></button>
+      <button class="btn btn-secondary" id="auto-back">Back</button>
+    </div>
+    <p class="auto-note">${groups.none.length} unnamed people match nobody and stay as they are.</p>
+    ${groups.split.length ? `<p class="auto-note"><strong>${groups.split.length}</strong> clusters are close to the look-alikes. They aren't merged here: the Sort step places their faces one at a time.</p>` : ""}
+    ${section(`Ready to merge (${groups.merge.length})`, groups.merge, (c) => row(c))}
+    ${section(`Needs your eye (${groups.review.length})`, groups.review, (c) => row(c, statusOfCluster(s, c).why.join(", ")))}
+  `);
+
+  const updateApply = () => {
+    const faces = [...s.picks.keys()].reduce((n, person) => n + s.match.clusters.find((c) => c.person === person).size, 0);
+    const btn = $("#merge-apply");
+    btn.textContent = `Merge ${s.picks.size} people (${faces} faces)`;
+    btn.disabled = s.picks.size === 0;
+  };
+  updateApply();
+  $("#auto-body").onchange = (e) => {
+    const person = e.target.dataset?.cluster;
+    if (person === undefined) return;
+    if (e.target.value === "") s.picks.delete(Number(person));
+    else {
+      s.picks.set(Number(person), Number(e.target.value));
+      e.target.nextElementSibling.src = `/api/people/${s.data.people[Number(e.target.value)].id}/thumbnail`;
+    }
+    updateApply();
+  };
+  $("#merge-bar").addEventListener("change", (e) => {
+    const value = parseFloat(e.target.value);
+    s.minSim = Number.isFinite(value) ? value / 100 : null;
+    s.picks = new Map();
+    renderMerge();
+  });
+  $("#merge-apply").addEventListener("click", applyMerge);
+  $("#auto-back").addEventListener("click", leaveAuto);
+}
+
+async function applyMerge() {
+  const s = scan, moves = [];
+  for (const [person, target] of s.picks) {
+    const c = s.match.clusters.find((x) => x.person === person);
+    for (const r of c.rows) {
+      moves.push({ faceId: s.data.faces[r].id, assetId: s.data.faces[r].assetId, from: s.data.people[person].id, to: s.data.people[target].id });
+    }
+  }
+  if (!confirm(`Move ${moves.length} faces into named people? You can undo this run from the start page.`)) return;
+  autoProgress(`Moving faces... 0 / ${moves.length}`);
+  try { showRunResult(moves.length, await applyMoves("merge", moves)); } catch (e) { autoFailed(e); }
+}
+
+// Faces of the clusters that sit close to the look-alikes join the pair as
+// unlabelled, so the model can place each face without ever training on it.
+function addClusterFaces(data, s) {
+  const dim = data.dim, extra = [];
+  for (const c of s.match.clusters) {
+    if (statusOfCluster(s, c).status === "split") {
+      for (const r of c.rows) extra.push({ row: r, personId: s.data.people[c.person].id });
+    }
+  }
+  if (!extra.length || s.data.dim !== dim) return { ...data, extraFaces: 0 };
+  const embeddings = new Float32Array(data.embeddings.length + extra.length * dim);
+  embeddings.set(data.embeddings);
+  const faces = [...data.faces];
+  extra.forEach(({ row, personId }, k) => {
+    const f = s.data.faces[row];
+    embeddings.set(s.data.embeddings.subarray(row * dim, (row + 1) * dim), data.embeddings.length + k * dim);
+    faces.push({ id: f.id, assetId: f.assetId, label: -1, ts: f.ts, personId });
+  });
+  return { dim, faces, embeddings, extraFaces: extra.length };
+}
+
+function pickEvenly(list, count) {
+  const step = Math.max(1, list.length / count), out = [];
+  for (let k = 0; k < list.length && out.length < count; k += step) out.push(list[Math.floor(k)]);
+  return out;
+}
+
+function shuffled(list) {
+  const out = [...list];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+async function trainSorter() {
+  autoProgress(`Training on ${pairData.faces.length} faces...`);
+  await refit((p) => autoProgress(`Training on ${pairData.faces.length} faces... ${Math.round(p * 100)}%`));
+  if (!pairFit || !pairFit.ok) throw new Error(`The pair model couldn't train: ${pairFit ? pairFit.reason : "no data"}`);
+  const plan = FaceModel.planPairFixes(pairData.faces, pairLogits, autoThreshold, trustedLabels);
+  const logitOf = (face) => pairLogits[pairFaceIndex.get(face.id)];
+  const closest = [...plan.unsure].sort((a, b) => Math.abs(logitOf(a)) - Math.abs(logitOf(b)));
+  sorter = {
+    plan,
+    audit: shuffled(plan.moves).slice(0, AUDIT_SIZE),
+    teach: pickEvenly(closest.slice(0, TEACH_SIZE * 4), TEACH_SIZE).map((face) => ({ face })),
+    rejected: new Set(),
+    taught: new Map(),
+  };
+}
+
+async function openSort() {
+  setAuto(`Sort ${wrongPerson.name} / ${correctPerson.name}`, `<p class="auto-note">Starting...</p>`);
+  try {
+    loadSession();
+    const minConfidence = Math.min(99.9, Math.max(80, parseFloat($("#min-confidence").value) || 97));
+    autoThreshold = FaceModel.probToLogit(minConfidence / 100);
+    await loadScan();
+    autoProgress("Loading both people's faces...");
+    const resp = await api(`/api/_embeddings?wrong=${wrongPerson.id}&correct=${correctPerson.id}`);
+    pairData = addClusterFaces(FaceModel.parsePayload(await resp.arrayBuffer()), scan);
+    pairFaceIndex = new Map(pairData.faces.map((f, i) => [f.id, i]));
+    await trainSorter();
+    renderSort();
+  } catch (e) { autoFailed(e); }
+}
+
+function nameForLabel(label) {
+  return label === 1 ? correctPerson.name : label === 0 ? wrongPerson.name : "unnamed";
+}
+
+const tileHtml = (faceId, assetId, caption) => `<button class="tile" data-face="${faceId}" data-asset="${assetId}">
+  <div class="crop"></div><span>${esc(caption)}</span></button>`;
+
+// Face boxes are relative to the preview, so a crop is the preview, scaled and shifted.
+async function fillTile(tile) {
+  const assetId = tile.dataset.asset;
+  const faces = await apiJSON(`/api/faces?id=${assetId}`).catch(() => []);
+  const face = Array.isArray(faces) && faces.find((f) => f.id === tile.dataset.face);
+  if (!face) return;
+  const width = face.boundingBoxX2 - face.boundingBoxX1, height = face.boundingBoxY2 - face.boundingBoxY1;
+  const scale = 96 / Math.max(width, height);
+  const crop = tile.querySelector(".crop");
+  crop.style.backgroundImage = `url(/api/assets/${assetId}/thumbnail?size=preview)`;
+  crop.style.backgroundSize = `${face.imageWidth * scale}px ${face.imageHeight * scale}px`;
+  crop.style.backgroundPosition = `${-face.boundingBoxX1 * scale}px ${-face.boundingBoxY1 * scale}px`;
+}
+
+function sortCounts() {
+  const counts = { toCorrect: 0, toWrong: 0, fromUnnamed: 0 };
+  for (const m of sorter.plan.moves) {
+    if (m.face.label < 0) counts.fromUnnamed++;
+    else if (m.to === 1) counts.toCorrect++;
+    else counts.toWrong++;
+  }
+  return counts;
+}
+
+function renderSort() {
+  const { plan, audit, teach } = sorter, n = sortCounts();
+  const a = wrongPerson.name, b = correctPerson.name;
+  const separation = pairFit.auc === null ? "" : ` Separation ${Math.round(pairFit.auc * 100)}% on ${pairFit.faceCount} faces.`;
+  const unlabelledAside = pairData.extraFaces ? ` ${pairData.extraFaces} faces from unnamed clusters included.` : "";
+  setAuto(`Sort ${a} / ${b}`, `
+    <p class="auto-note">
+      <strong>${n.toWrong}</strong> ${esc(b)} → ${esc(a)}, <strong>${n.toCorrect}</strong> ${esc(a)} → ${esc(b)}, <strong>${n.fromUnnamed}</strong> unnamed → one of them.<br>
+      ${plan.settled} faces already look right, ${plan.unsure.length} are too close to call and stay where they are.${separation}${unlabelledAside}
+    </p>
+    <div class="auto-actions">
+      <button class="btn btn-primary" id="sort-apply"></button>
+      <button class="btn btn-secondary" id="sort-retrain" disabled>Retrain with your corrections</button>
+      <button class="btn btn-secondary" id="auto-back">Back</button>
+    </div>
+    <p class="auto-note auto-warning" id="sort-warning" style="display:none"></p>
+    ${audit.length ? `<div class="auto-section"><h2>Spot check: ${audit.length} random moves</h2>
+      <p class="auto-note">Click any face that's wrong.</p>
+      <div class="tile-grid" id="audit-grid">${audit.map((m) => tileHtml(m.face.id, m.face.assetId, `→ ${nameForLabel(m.to)}`)).join("")}</div></div>` : ""}
+    ${teach.length ? `<div class="auto-section"><h2>Teach it the hard ones</h2>
+      <p class="auto-note">Optional. These are the faces it's least sure of. Click to cycle: ${esc(a)}, ${esc(b)}, not sure.</p>
+      <div class="tile-grid" id="teach-grid">${teach.map(({ face }) => tileHtml(face.id, face.assetId, "not sure")).join("")}</div></div>` : ""}
+  `);
+  $("#auto-body").querySelectorAll(".tile").forEach(fillTile);
+
+  const update = () => {
+    const rejectedShare = audit.length ? sorter.rejected.size / audit.length : 0;
+    const blocked = rejectedShare > AUDIT_MAX_REJECTED;
+    const apply = $("#sort-apply");
+    apply.textContent = `Apply ${plan.moves.length - sorter.rejected.size} moves`;
+    apply.disabled = blocked || plan.moves.length === sorter.rejected.size;
+    $("#sort-retrain").disabled = sorter.rejected.size + sorter.taught.size === 0;
+    const warning = $("#sort-warning");
+    warning.style.display = blocked ? "" : "none";
+    warning.textContent = `You rejected ${sorter.rejected.size} of ${audit.length}, too many to trust the rest. Retrain so it learns from them.`;
+  };
+  update();
+
+  $("#audit-grid")?.addEventListener("click", (e) => {
+    const tile = e.target.closest(".tile");
+    if (!tile) return;
+    const id = tile.dataset.face;
+    if (sorter.rejected.has(id)) sorter.rejected.delete(id); else sorter.rejected.add(id);
+    tile.classList.toggle("rejected", sorter.rejected.has(id));
+    update();
+  });
+  $("#teach-grid")?.addEventListener("click", (e) => {
+    const tile = e.target.closest(".tile");
+    if (!tile) return;
+    const id = tile.dataset.face, next = { undefined: 0, 0: 1, 1: undefined }[sorter.taught.get(id)];
+    if (next === undefined) sorter.taught.delete(id); else sorter.taught.set(id, next);
+    tile.classList.toggle("taught", next !== undefined);
+    tile.querySelector("span").textContent = next === undefined ? "not sure" : nameForLabel(next);
+    update();
+  });
+  $("#sort-apply").addEventListener("click", applySort);
+  $("#sort-retrain").addEventListener("click", retrainSort);
+  $("#auto-back").addEventListener("click", leaveAuto);
+}
+
+// A rejected move tells us the face isn't the proposed person. For a labelled face
+// that means its label was right. An unnamed face may be anyone, so it's "neither".
+function recordSortFeedback() {
+  for (const move of sorter.plan.moves) {
+    if (sorter.rejected.has(move.face.id)) trustedLabels[move.face.id] = move.face.label >= 0 ? move.face.label : -1;
+  }
+  for (const [faceId, label] of sorter.taught) trustedLabels[faceId] = label;
+  saveProgress();
+}
+
+async function retrainSort() {
+  recordSortFeedback();
+  try { await trainSorter(); renderSort(); } catch (e) { autoFailed(e); }
+}
+
+async function applySort() {
+  recordSortFeedback();
+  const personId = (face) => (face.label === 1 ? correctPerson.id : face.label === 0 ? wrongPerson.id : face.personId);
+  const moves = sorter.plan.moves.filter((m) => !sorter.rejected.has(m.face.id)).map((m) => ({
+    faceId: m.face.id,
+    assetId: m.face.assetId,
+    from: personId(m.face),
+    to: m.to === 1 ? correctPerson.id : wrongPerson.id,
+  }));
+  if (!confirm(`Move ${moves.length} faces? You can undo this run from the start page.`)) return;
+  autoProgress(`Moving faces... 0 / ${moves.length}`);
+  try {
+    const failed = await applyMoves("sort", moves);
+    for (const m of sorter.plan.moves) if (!sorter.rejected.has(m.face.id)) setPairLabel(m.face.id, m.to);
+    showRunResult(moves.length, failed);
+  } catch (e) { autoFailed(e); }
 }
 
 // --- Lazy per-asset face loading ---
@@ -472,16 +1077,18 @@ async function showNextAsset() {
     // Auto-fix logic: check if Immich's top suggestion matches correctPerson
     // Skip auto-fix if we got here via undo — user wants to manually review
     if (autoFixMode !== "off" && !shouldSkipAutoFix) {
-      const autoFixResult = await tryAutoFix(wrongFaces, assetId);
+      const autoFixResult = await tryAutoFix(wrongFaces, correctPresent, assetId);
       if (autoFixResult && autoFixResult.action === "instant") {
         currentIndex++;
         continue;
       }
       if (autoFixResult && autoFixResult.action === "confirm") {
         currentItem.autoFixableFaces = autoFixResult.facesToFix;
+        currentItem.recommendation = autoFixResult.recommendation;
       }
       if (autoFixResult && autoFixResult.action === "confirm-skip") {
         currentItem.autoSkipPending = true;
+        currentItem.recommendation = autoFixResult.recommendation;
       }
     }
 
@@ -491,10 +1098,10 @@ async function showNextAsset() {
     img.onload = () => {
       $("#photo-loading").style.display = "none";
       drawOverlays();
-      if (currentItem && currentItem.autoFixableFaces && autoFixMode === "confirm") {
+      if (currentItem && currentItem.autoFixableFaces) {
         startCountdown(currentItem.autoFixableFaces, "fix");
       }
-      if (currentItem && currentItem.autoSkipPending && autoFixMode === "confirm") {
+      if (currentItem && currentItem.autoSkipPending) {
         startCountdown([], "skip");
       }
     };
@@ -525,6 +1132,7 @@ function updatePositionHeader() {
   $("#stat-autofixed").textContent = stats.autoFixed;
   $("#stat-unassigned").textContent = stats.unassigned;
   $("#stat-skipped").textContent = stats.skipped;
+  updateModelStatus();
   // Update Immich deep link
   const link = $("#immich-link");
   if (immichBaseUrl && currentIndex < assetIds.length) {
@@ -592,7 +1200,12 @@ function drawOverlays() {
     ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
     const label = document.createElement("span");
     label.className = "crop-label";
-    label.textContent = currentItem.isDup ? `[${i + 1}]` : "";
+    const logit = scoreOf(face.id);
+    const verdict = logit === null ? "" : (() => {
+      const p = FaceModel.logitToProb(logit);
+      return `${Math.min(99, Math.round(Math.max(p, 1 - p) * 100))}% ${p >= 0.5 ? correctPerson.name : wrongPerson.name}`;
+    })();
+    label.textContent = [currentItem.isDup ? `[${i + 1}]` : "", verdict].filter(Boolean).join(" ");
     cropItem.appendChild(canvas);
     cropItem.appendChild(label);
     cropsDiv.appendChild(cropItem);
@@ -613,7 +1226,8 @@ function markReviewed(assetId) {
 
 async function reassignFace(faceId, assetId) {
   await reassignFaceAPI(faceId, correctPerson.id);
-  undoStack.push({ faceId, oldPersonId: wrongPerson.id, assetId });
+  const gateChange = recordDecision(faceId, 1);
+  undoStack.push({ faceId, oldPersonId: wrongPerson.id, assetId, gateChange });
   stats.reassigned++;
   stats.reviewed++;
   markReviewed(assetId);
@@ -634,6 +1248,7 @@ async function handleSoloReassign(reassign) {
     await reassignFace(currentItem.wrongFaces[0].id, currentItem.assetId);
   } else {
     console.log(`[skip] ${currentItem.assetId}: kept as ${wrongPerson.name} (user pressed N)`);
+    recordDecision(currentItem.wrongFaces[0].id, 0);
     stats.skipped++;
     stats.reviewed++;
     markReviewed(currentItem.assetId);
@@ -656,7 +1271,8 @@ async function handleSoloUnassign() {
   if (!currentItem || currentItem.isDup) return;
   const face = currentItem.wrongFaces[0];
   const newPersonId = await unassignFaceAPI(face.id);
-  undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, newPersonId, assetId: currentItem.assetId, wasUnassign: true });
+  const gateChange = recordDecision(face.id, -1);
+  undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, newPersonId, assetId: currentItem.assetId, wasUnassign: true, gateChange });
   stats.unassigned++;
   stats.reviewed++;
   markReviewed(currentItem.assetId);
@@ -669,7 +1285,8 @@ async function handleDuplicateUnassign(num) {
   if (num < 1 || num > currentItem.wrongFaces.length) return;
   const face = currentItem.wrongFaces[num - 1];
   const newPersonId = await unassignFaceAPI(face.id);
-  undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, newPersonId, assetId: currentItem.assetId, wasUnassign: true });
+  const gateChange = recordDecision(face.id, -1);
+  undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, newPersonId, assetId: currentItem.assetId, wasUnassign: true, gateChange });
   stats.unassigned++;
   stats.reviewed++;
   markReviewed(currentItem.assetId);
@@ -681,6 +1298,18 @@ async function undo() {
   if (undoStack.length === 0) return;
   const action = undoStack.pop();
   await reassignFaceAPI(action.faceId, action.oldPersonId);
+  delete trustedLabels[action.faceId];
+  setPairLabel(action.faceId, 0);
+  if (action.gateChange) {
+    // The decision that was counted is gone, so its vote goes too.
+    gate.seen--;
+    if (action.gateChange.agreed) gate.agreed--;
+  }
+  if (action.wasAutoFixed) {
+    // Undoing an automatic fix is a disagreement with the recommendation.
+    if (action.approved) gate.agreed--;
+    else gate.seen++;
+  }
   // Clean up orphaned unnamed person from unassign
   if (action.wasUnassign && action.newPersonId) {
     try { await api(`/api/people/${action.newPersonId}`, { method: "DELETE" }); } catch (e) { console.warn("[undo] Failed to delete orphaned person:", e); }
@@ -706,7 +1335,9 @@ function saveProgress() {
   const saved = {
     reviewedAssets: [...reviewedAssets],
     stats,
-    undoStack
+    undoStack,
+    trustedLabels,
+    gate
   };
   localStorage.setItem(storageKey, JSON.stringify(saved));
 }
@@ -725,64 +1356,77 @@ function showSummary() {
 }
 
 // --- Auto-fix helpers ---
-// Returns "instant" if auto-fixed immediately, "confirm" if countdown should start, or null
-// Per-face logic: top suggestion = correctPerson → reassign, top = wrongPerson → leave (correctly assigned), other → bail to manual
-async function tryAutoFix(wrongFaces, assetId) {
-  const facesToFix = [];
+const IMMICH_SIGNAL = 100; // stands in for a logit: Immich gives a yes/no, not a score
+
+// Which of the pair does Immich rank closer? Immich orders people by hidden, then
+// favorite, and only then by distance to each person's single feature photo, so
+// the ranking only means anything among people in the same favorite tier.
+async function immichSignal(faceId) {
+  const favorite = !!wrongPerson.isFavorite;
+  if (favorite !== !!correctPerson.isFavorite) return null;
+  let people;
+  try {
+    people = await apiJSON(`/api/people?closestAssetId=${faceId}&withHidden=true&page=1&size=100`);
+  } catch (e) {
+    console.warn(`[autofix] no suggestion for face ${faceId}:`, e);
+    return null;
+  }
+  const list = people.people || people;
+  if (!Array.isArray(list)) return null;
+  const top = list.find(p => !p.isHidden && !!p.isFavorite === favorite);
+  if (top && top.id === correctPerson.id) return IMMICH_SIGNAL;
+  if (top && top.id === wrongPerson.id) return -IMMICH_SIGNAL;
+  return null;
+}
+
+// Returns null for manual review, { action: "instant" } if handled without showing
+// the photo, or a "confirm" / "confirm-skip" action that starts a countdown.
+async function tryAutoFix(wrongFaces, correctPresent, assetId) {
+  const scored = [];
   for (const face of wrongFaces) {
-    const top = await getTopSuggestion(face.id);
-    const label = top ? `${top.name} (${top.id})` : "none";
-    if (top && top.id === correctPerson.id) {
-      console.log(`[autofix] face ${face.id} → top suggestion: ${label} ✓ fix`);
-      facesToFix.push(face);
-    } else if (top && top.id === wrongPerson.id) {
-      console.log(`[autofix] face ${face.id} → top suggestion: ${label} ✓ correctly assigned, skip`);
-      // Face is correctly assigned to wrongPerson — leave it alone
-    } else {
-      console.log(`[autofix] face ${face.id} → top suggestion: ${label} ✗ unknown, manual review`);
-      return null;
-    }
+    scored.push({ face, logit: pairLogits ? scoreOf(face.id) : await immichSignal(face.id) });
   }
-  // All faces resolved: some to fix, some correctly assigned
+  const decision = FaceModel.decidePhoto(scored, correctPresent, autoThreshold);
+  console.log(`[autofix] ${assetId}: scores`, scored.map(s => s.logit), decision ? `fix ${decision.fix.length}, keep ${decision.keep.length}` : "manual review");
+  if (!decision) return null;
+
+  const facesToFix = decision.fix.map(s => s.face);
+  if (autoFixMode !== "instant" || !FaceModel.gateOpen(gate)) {
+    const recommendation = {
+      fix: new Set(facesToFix.map(f => f.id)),
+      keep: new Set(decision.keep.map(s => s.face.id)),
+      counted: false
+    };
+    return facesToFix.length === 0
+      ? { action: "confirm-skip", recommendation }
+      : { action: "confirm", facesToFix, recommendation };
+  }
+
   if (facesToFix.length === 0) {
-    // All faces are correctly assigned to wrongPerson — auto-advance
-    if (autoFixMode === "instant") {
-      console.log(`[autofix] ${assetId}: all faces correctly assigned, auto-skipping`);
-      stats.skipped++;
-      stats.reviewed++;
-      markReviewed(assetId);
-      updatePositionHeader();
-      return { action: "instant" };
-    }
-    return { action: "confirm-skip" };
-  }
-  if (autoFixMode === "instant") {
+    stats.skipped++;
+  } else {
     for (const face of facesToFix) {
       await reassignFaceAPI(face.id, correctPerson.id);
+      setPairLabel(face.id, 1);
       undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, assetId, wasAutoFixed: true });
     }
     stats.autoFixed += facesToFix.length;
-    stats.reviewed++;
-    markReviewed(assetId);
-    updatePositionHeader();
-    return { action: "instant" };
   }
-  return { action: "confirm", facesToFix };
-}
-
-async function getTopSuggestion(faceId) {
-  const people = await apiJSON(`/api/people?closestAssetId=${faceId}&withHidden=true&page=1&size=1`);
-  const list = people.people || people;
-  return Array.isArray(list) && list.length > 0 ? list[0] : null;
+  stats.reviewed++;
+  markReviewed(assetId);
+  updatePositionHeader();
+  return { action: "instant" };
 }
 
 async function autoReassignCurrent() {
   if (!countdownAutoFixFaces || !currentItem) return;
   const faces = countdownAutoFixFaces;
   countdownAutoFixFaces = null;
+  const approved = recordApproval();
   for (const face of faces) {
     await reassignFaceAPI(face.id, correctPerson.id);
-    undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, assetId: currentItem.assetId, wasAutoFixed: true });
+    setPairLabel(face.id, 1);
+    undoStack.push({ faceId: face.id, oldPersonId: wrongPerson.id, assetId: currentItem.assetId, wasAutoFixed: true, approved });
   }
   stats.autoFixed += faces.length;
   stats.reviewed++;
@@ -794,6 +1438,7 @@ async function autoReassignCurrent() {
 function autoSkipCurrent() {
   if (!currentItem) return;
   console.log(`[autofix] ${currentItem.assetId}: auto-skipped (all faces correctly assigned)`);
+  recordApproval();
   stats.skipped++;
   stats.reviewed++;
   markReviewed(currentItem.assetId);
@@ -889,6 +1534,9 @@ document.addEventListener("keydown", (e) => {
 
 // --- Button handlers ---
 $("#btn-start").addEventListener("click", startSession);
+$("#btn-merge").addEventListener("click", openMerge);
+$("#btn-sort").addEventListener("click", openSort);
+$("#btn-undo-run").addEventListener("click", undoLastRun);
 $("#btn-quit").addEventListener("click", showSummary);
 
 // Handle window resize to redraw overlays
@@ -899,7 +1547,13 @@ window.addEventListener("resize", () => {
 
 // --- Init ---
 loadPeople();
-apiJSON("/api/_immich-url").then(data => { immichBaseUrl = (data && data.url) || ""; }).catch(() => {});
+apiJSON("/api/_immich-url").then(data => {
+  immichBaseUrl = (data && data.url) || "";
+  embeddingsEnabled = !!(data && data.embeddings);
+  $("#model-availability").textContent = embeddingsEnabled ? "Pair model on" : "Pair model off (see README: --psql)";
+  $("#auto-availability").textContent = embeddingsEnabled ? "Nothing changes until you press Apply." : "Needs --psql (see README).";
+  updateAutoButtons();
+}).catch(() => {});
 </script>
 </body>
 </html>
